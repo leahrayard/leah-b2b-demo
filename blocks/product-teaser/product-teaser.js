@@ -73,6 +73,16 @@ function renderImage(product, size = 250) {
   const { name } = product;
   const { url: imageUrl, label } = product.images[0];
 
+  // Standard Commerce media URLs are not AEM Assets URLs. Render them
+  // directly instead of rewriting them into an AEM Assets delivery path,
+  // which would produce broken image links for non-AEM-Assets sources.
+  if (!imageUrl.includes('/adobe/assets/')) {
+    const fullUrl = imageUrl.startsWith('//') ? `https:${imageUrl}` : imageUrl;
+    return document.createRange().createContextualFragment(`<picture>
+      <img height="${size}" width="${size}" src="${fullUrl}" loading="eager" alt="${label}" />
+    </picture>`);
+  }
+
   // Extract assetId from the URL
   const urlParts = imageUrl.split('/');
   const assetId = urlParts[urlParts.length - 1];
@@ -141,7 +151,7 @@ function renderProduct(product, config, block) {
       <h1>${name}</h1>
       <div class="price">${renderPrice(product, priceFormatter.format)}</div>
       <div class="actions">
-        ${config['details-button'] ? `<a href="${rootLink(`/products/${urlKey}/${sku}`)}" class="button primary">Details</a>` : ''}
+        ${config['details-button'] ? `<a href="${rootLink(`/products/${urlKey}/${sku?.replace(/\//g, '__')}`)}" class="button primary">Details</a>` : ''}
         ${addToCartButtonHtml}
       </div>
     </div>
