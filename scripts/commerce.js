@@ -626,12 +626,44 @@ export async function commerceEndpointWithQueryParams() {
  * Extracts the SKU from the current URL path.
  * @returns {string|null} The SKU extracted from the URL, or null if not found
  */
+/**
+ * Reversible, lowercase-stable, Helix-path-safe SKU encoding for PDP URLs.
+ * Keeps [a-z0-9-] literal; escapes every other UTF-8 byte (including _) as
+ * _HH lowercase hex. MIRROR of demo-builder-vscode
+ * src/features/eds/services/pdpUrlEncoding.ts — keep byte-for-byte identical
+ * (see ADR-007). Clean SKUs encode unchanged; SKUs with spaces/punctuation
+ * round-trip instead of breaking. Decode is modulo case — Helix lowercases
+ * content-bus paths and Catalog Service SKU lookup is case-insensitive.
+ */
+export function encodeSkuForUrl(sku) {
+  const bytes = new TextEncoder().encode(sku.toLowerCase());
+  let out = '';
+  for (const b of bytes) {
+    const ch = String.fromCharCode(b);
+    out += /[a-z0-9-]/.test(ch) ? ch : `_${b.toString(16).padStart(2, '0')}`;
+  }
+  return out;
+}
+
+function decodeSkuFromUrl(value) {
+  const bytes = [];
+  for (let i = 0; i < value.length; i += 1) {
+    if (value[i] === '_') {
+      bytes.push(parseInt(value.slice(i + 1, i + 3), 16));
+      i += 2;
+    } else {
+      bytes.push(value.charCodeAt(i));
+    }
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+}
+
 function getSkuFromUrl() {
   const path = window.location.pathname;
-  // Allow __ (encoded forward slash) in the SKU segment, then decode
-  // __ back to / so the Commerce API receives the original SKU.
+  // Allow the full Helix-safe alphabet in the SKU segment, then decode the
+  // _HH escapes back to the original SKU before querying Commerce.
   const result = path.match(/\/products\/[^/]+\/([^/]+)$/);
-  return result?.[1] ? result[1].replace(/__/g, '/') : null;
+  return result?.[1] ? decodeSkuFromUrl(result[1]) : null;
 }
 
 /**
@@ -675,12 +707,10 @@ export function getProductLink(urlKey, sku) {
     console.warn('getProductLink: sku is missing or empty', { urlKey, sku });
   }
   const sanitizedUrlKey = urlKey ? sanitizeName(urlKey) : '';
-  // SKUs may contain forward slashes (e.g. "apple-iphone-se/iphone-se").
-  // sanitizeName() would destroy the slash, so split on /, sanitize each
-  // part, and rejoin with __ as the delimiter (getSkuFromUrl decodes it).
-  const sanitizedSku = sku
-    ? sku.split('/').map((part) => sanitizeName(part)).join('__')
-    : '';
+  // Reversible, Helix-safe SKU encoding (see encodeSkuForUrl) instead of the
+  // lossy sanitizeName(), so SKUs with spaces/punctuation/mixed case survive
+  // the round-trip to the Commerce API on PDP load.
+  const sanitizedSku = sku ? encodeSkuForUrl(sku) : '';
   return rootLink(`/products/${sanitizedUrlKey}/${sanitizedSku}`);
 }
 

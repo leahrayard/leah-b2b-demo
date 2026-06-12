@@ -8,6 +8,7 @@ import { fetchPlaceholders, getProductLink, rootLink } from '../../scripts/comme
 
 import renderAuthCombine from './renderAuthCombine.js';
 import { renderAuthDropdown } from './renderAuthDropdown.js';
+import renderSellerAssistedBuyingBanner from './renderSellerAssistedBuyingBanner.js';
 
 // media query match that indicates mobile/tablet width
 const isDesktop = window.matchMedia('(min-width: 900px)');
@@ -162,6 +163,12 @@ function setupSubmenu(navSection) {
  * @param {Element} block The header block element
  */
 export default async function decorate(block) {
+  // Render a banner at the top of the page if seller assisted buying session identified
+  const sellerAssistedBuyingBanner = await renderSellerAssistedBuyingBanner();
+  if (sellerAssistedBuyingBanner && !document.querySelector('.seller-assisted-buying-banner')) {
+    document.body.insertAdjacentElement('afterbegin', sellerAssistedBuyingBanner);
+  }
+
   // load nav as fragment
   const navMeta = getMetadata('nav');
   const navPath = navMeta ? new URL(navMeta, window.location).pathname : '/nav';
@@ -213,17 +220,7 @@ export default async function decorate(block) {
       });
   }
 
-  let navTools = nav.querySelector('.nav-tools');
-
-  // Create the nav-tools section if it is missing. DA.live strips empty
-  // divs during content processing, leaving nav with only 2 sections
-  // (brand, sections) instead of 3 — without this guard header.js throws
-  // "Cannot read properties of null".
-  if (!navTools) {
-    navTools = document.createElement('div');
-    navTools.classList.add('nav-tools');
-    nav.appendChild(navTools);
-  }
+  const navTools = nav.querySelector('.nav-tools');
 
   /** Wishlist */
   const wishlist = document.createRange().createContextualFragment(`
