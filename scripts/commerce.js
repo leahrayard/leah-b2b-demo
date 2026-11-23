@@ -14,6 +14,17 @@ import {
 } from './aem.js';
 import initializeDropins from './initializers/index.js';
 
+let consentGranted = false;
+
+/** Returns the latest upstream consent notification for this document. */
+export function isConsentGranted() {
+  return consentGranted;
+}
+
+window.addEventListener('consent.update', ({ detail }) => {
+  consentGranted = detail?.consented === true;
+});
+
 /**
  * Sanitizes the given string by:
  * - convert to lower case
@@ -63,6 +74,7 @@ export const PRODUCT_TEMPLATE_PATHS = [
 // PATHS
 export const SUPPORT_PATH = '/support';
 export const PRIVACY_POLICY_PATH = '/privacy-policy';
+export const QUICK_ORDER_PATH = '/quick-order';
 
 // GUEST PATHS
 export const ORDER_STATUS_PATH = '/order-status';
@@ -83,9 +95,32 @@ export const CUSTOMER_LOGIN_PATH = `${CUSTOMER_PATH}/login`;
 export const CUSTOMER_ACCOUNT_PATH = `${CUSTOMER_PATH}/account`;
 export const CUSTOMER_FORGOTPASSWORD_PATH = `${CUSTOMER_PATH}/forgotpassword`;
 export const SALES_ORDER_VIEW_PATH = '/sales/order/view/';
+export const CUSTOMER_REQUISITION_LISTS_PATH = `${CUSTOMER_PATH}/requisition-lists`;
+export const CUSTOMER_REQUISITION_LIST_DETAILS_PATH = `${CUSTOMER_PATH}/requisition-list-view`;
+export const CUSTOMER_NEGOTIABLE_QUOTE_PATH = `${CUSTOMER_PATH}/negotiable-quote`;
+export const CUSTOMER_NEGOTIABLE_QUOTE_TEMPLATE_PATH = `${CUSTOMER_PATH}/negotiable-quote-template`;
 
 // TRACKING URL
 export const UPS_TRACKING_URL = 'https://www.ups.com/track';
+
+// CUSTOMER B2B PATHS
+export const CUSTOMER_PO_RULES_PATH = `${CUSTOMER_PATH}/approval-rules`;
+export const CUSTOMER_PO_RULE_FORM_PATH = `${CUSTOMER_PATH}/approval-rule`;
+export const CUSTOMER_PO_RULE_DETAILS_PATH = `${CUSTOMER_PATH}/approval-rule-details`;
+export const CUSTOMER_PO_LIST_PATH = `${CUSTOMER_PATH}/purchase-orders`;
+export const CUSTOMER_PO_DETAILS_PATH = `${CUSTOMER_PATH}/purchase-order-details`;
+
+// FILE UPLOAD
+export const ACCEPTED_FILE_TYPES = [
+  'application/msword', // .doc
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+  'application/vnd.ms-excel', // .xls
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+  'application/pdf', // .pdf
+  'text/plain', // .txt
+  'image/jpeg', // .jpeg, .jpg
+  'image/png', // .png
+];
 
 /**
  * Auth Privacy Policy Consent Slot
@@ -151,7 +186,7 @@ function notifyUI(event) {
  * Detects the page type based on DOM elements
  * @returns {string} The detected page type
  */
-function detectPageType() {
+export function detectPageType() {
   if (document.body.querySelector('main .product-details')) {
     return 'Product';
   } if (document.body.querySelector('main .product-list-page')) {
@@ -160,6 +195,8 @@ function detectPageType() {
     return 'Cart';
   } if (document.body.querySelector('main .commerce-checkout')) {
     return 'Checkout';
+  } if (document.body.querySelector('main .commerce-b2b-quote-checkout')) {
+    return 'B2B Checkout';
   }
   return 'CMS';
 }
@@ -254,9 +291,85 @@ export async function fetchIndex(indexFile, pageSize = 500) {
 /**
  * Loads commerce-specific eager content
  */
+/**
+ * Demo Builder: a loading skeleton for the product page. The product-details
+ * section stays hidden until the product data has loaded, so this draws the
+ * drop-in Skeleton in that block's own layout just before the section, and
+ * removes it once the section is shown.
+ */
+async function showProductSkeleton() {
+  const section = document.querySelector('main .product-details')?.closest('.section');
+  if (!section) return;
+  const [{ Skeleton, SkeletonRow, provider: UI }, { h }] = await Promise.all([
+    import('@dropins/tools/components.js'),
+    import('@dropins/tools/preact.js'),
+  ]);
+  // One row per wrapper: a global drop-in rule hides a skeleton row after the
+  // first among its siblings on small screens.
+  const row = (props, className) => h('div', {
+    className,
+    children: h(SkeletonRow, { fullWidth: true, ...props }),
+  });
+  const image = { style: { height: 'auto', aspectRatio: '960 / 1191', maxHeight: '60vh' } };
+  const placeholder = document.createElement('div');
+  placeholder.className = 'product-details-skeleton';
+  placeholder.style.margin = '0 0 var(--spacing-xbig)';
+  const inner = document.createElement('div');
+  Object.assign(inner.style, { maxWidth: '1200px', margin: 'auto', padding: '0 var(--spacing-big)' });
+  placeholder.append(inner);
+  section.before(placeholder);
+  await UI.render(Skeleton, {
+    className: 'product-details__wrapper',
+    children: [
+      h('div', {
+        className: 'product-details__left-column',
+        children: row(image),
+      }),
+      h('div', {
+        className: 'product-details__right-column',
+        style: { display: 'grid', gap: 'var(--spacing-medium)', alignContent: 'start' },
+        children: [
+          row({ variant: 'heading', size: 'xlarge' }),
+          row({ variant: 'heading', size: 'medium', style: { width: '40%' } }),
+          // The block shows its gallery here on small screens only, by this class.
+          row(image, 'product-details__gallery'),
+          row({ size: 'medium' }),
+          row({ size: 'medium' }),
+          row({ size: 'small', style: { width: '30%' } }),
+          row({ size: 'large' }),
+        ],
+      }),
+    ],
+  })(inner);
+  const removeOnceShown = () => {
+    if (section.dataset.sectionStatus !== 'loaded') return false;
+    placeholder.remove();
+    return true;
+  };
+  if (removeOnceShown()) return;
+  const observer = new MutationObserver(() => {
+    if (removeOnceShown()) observer.disconnect();
+  });
+  observer.observe(section, { attributes: true, attributeFilter: ['data-section-status'] });
+}
+
 export async function loadCommerceEager() {
   const pageType = detectPageType();
   initializeAdobeDataLayer(pageType);
+
+  // Demo Builder: a product page no longer stays blank while its data loads.
+  // The product is fetched while a skeleton shows; the product-details block
+  // replaces it, and the page is told it is ready once the data is in.
+  if (pageType === 'Product') {
+    const productReady = handleCommercePageType(pageType);
+    await showProductSkeleton().catch((e) => console.warn('Product skeleton not shown:', e));
+    productReady.then(() => notifyUI('lcp'), (e) => {
+      console.error('Error initializing commerce configuration:', e);
+      loadErrorPage(418);
+    });
+    return;
+  }
+
   await handleCommercePageType(pageType);
 
   // notify that the page is ready for eager loading
@@ -313,7 +426,6 @@ export async function loadCommerceLazy() {
   // Initialize Adobe Client Data Layer
   await import('./acdl/adobe-client-data-layer.min.js');
 
-  // Track history
   trackHistory();
 }
 
@@ -612,11 +724,15 @@ function createHashFromObject(obj, length = 5) {
 
 /**
  * Creates a commerce endpoint URL with query parameters including a cache-busting hash.
+ * @param {Object} [customHeaders] - Optional custom headers to merge into the CB Hash
  * @returns {Promise<URL>} A promise that resolves to the endpoint URL with query parameters
  */
-export async function commerceEndpointWithQueryParams() {
+export async function commerceEndpointWithQueryParams(customHeaders = {}) {
   const urlWithQueryParams = new URL(getConfigValue('commerce-endpoint'));
-  const headers = getHeaders('cs');
+  const headers = {
+    ...getHeaders('cs'),
+    ...customHeaders,
+  };
   const shortHash = createHashFromObject(headers);
   urlWithQueryParams.searchParams.append('cb', shortHash);
   return urlWithQueryParams;
@@ -626,44 +742,10 @@ export async function commerceEndpointWithQueryParams() {
  * Extracts the SKU from the current URL path.
  * @returns {string|null} The SKU extracted from the URL, or null if not found
  */
-/**
- * Reversible, lowercase-stable, Helix-path-safe SKU encoding for PDP URLs.
- * Keeps [a-z0-9-] literal; escapes every other UTF-8 byte (including _) as
- * _HH lowercase hex. MIRROR of demo-builder-vscode
- * src/features/eds/services/pdpUrlEncoding.ts — keep byte-for-byte identical
- * (see ADR-007). Clean SKUs encode unchanged; SKUs with spaces/punctuation
- * round-trip instead of breaking. Decode is modulo case — Helix lowercases
- * content-bus paths and Catalog Service SKU lookup is case-insensitive.
- */
-export function encodeSkuForUrl(sku) {
-  const bytes = new TextEncoder().encode(sku.toLowerCase());
-  let out = '';
-  for (const b of bytes) {
-    const ch = String.fromCharCode(b);
-    out += /[a-z0-9-]/.test(ch) ? ch : `_${b.toString(16).padStart(2, '0')}`;
-  }
-  return out;
-}
-
-function decodeSkuFromUrl(value) {
-  const bytes = [];
-  for (let i = 0; i < value.length; i += 1) {
-    if (value[i] === '_') {
-      bytes.push(parseInt(value.slice(i + 1, i + 3), 16));
-      i += 2;
-    } else {
-      bytes.push(value.charCodeAt(i));
-    }
-  }
-  return new TextDecoder().decode(new Uint8Array(bytes));
-}
-
 function getSkuFromUrl() {
   const path = window.location.pathname;
-  // Allow the full Helix-safe alphabet in the SKU segment, then decode the
-  // _HH escapes back to the original SKU before querying Commerce.
-  const result = path.match(/\/products\/[^/]+\/([^/]+)$/);
-  return result?.[1] ? decodeSkuFromUrl(result[1]) : null;
+  const result = path.match(/\/products\/[\w|-]+\/([\w|-]+)$/);
+  return result?.[1];
 }
 
 /**
@@ -699,6 +781,32 @@ export function isProductTemplate() {
   });
 }
 
+/**
+ * Renders promotion/discount rule labels for a cart item, keeping them in sync
+ * as the item's data changes. Used by the cart, mini-cart, and checkout
+ * order-summary line items, which all share the same dropin cart-item context.
+ * @param {Object} ctx - The dropin cart-item Footer slot context
+ * @returns {HTMLElement} The promotions wrapper element
+ */
+export function renderCartItemPromotions(ctx) {
+  const promotionsWrapper = document.createElement('div');
+  promotionsWrapper.className = 'cart-item-promotions';
+
+  ctx.onChange((next) => {
+    promotionsWrapper.innerHTML = '';
+    next.item?.discount?.label?.forEach((label) => {
+      const promoDiv = document.createElement('div');
+      promoDiv.className = 'cart-item-promotion-label';
+      promoDiv.textContent = label;
+      promotionsWrapper.appendChild(promoDiv);
+    });
+  });
+
+  ctx.appendChild(promotionsWrapper);
+
+  return promotionsWrapper;
+}
+
 export function getProductLink(urlKey, sku) {
   if (!urlKey) {
     console.warn('getProductLink: urlKey is missing or empty', { urlKey, sku });
@@ -707,10 +815,7 @@ export function getProductLink(urlKey, sku) {
     console.warn('getProductLink: sku is missing or empty', { urlKey, sku });
   }
   const sanitizedUrlKey = urlKey ? sanitizeName(urlKey) : '';
-  // Reversible, Helix-safe SKU encoding (see encodeSkuForUrl) instead of the
-  // lossy sanitizeName(), so SKUs with spaces/punctuation/mixed case survive
-  // the round-trip to the Commerce API on PDP load.
-  const sanitizedSku = sku ? encodeSkuForUrl(sku) : '';
+  const sanitizedSku = sku ? sanitizeName(sku) : '';
   return rootLink(`/products/${sanitizedUrlKey}/${sanitizedSku}`);
 }
 
@@ -735,38 +840,70 @@ export function getOptionsUIDsFromUrl() {
 }
 
 /**
+ * Determines the store identifier for tracking history based on configuration headers.
+ * @returns {string|undefined} Store identifier based on header values or undefined.
+ */
+export function getStoreIdentifier() {
+  const headers = getHeaders('cs');
+  const saasStoreIdentifier = 'magento-store-view-code';
+  const acoStoreIdentifier = 'ac-view-id';
+  const storeIdentifierKey = Object.keys(headers).find(
+    (key) => [saasStoreIdentifier, acoStoreIdentifier].includes(key.toLowerCase()),
+  );
+  const storeIdentifier = storeIdentifierKey ? headers[storeIdentifierKey] : undefined;
+  if (!storeIdentifier) {
+    console.warn('No store view code found in config headers for tracking history');
+    return undefined;
+  }
+  return storeIdentifier;
+}
+
+/**
  * Tracks user browsing and purchase history for recommendations.
  * Stores product view history and purchase history in localStorage.
  */
+let historyTrackingInitialized = false;
+
 function trackHistory() {
-  if (!getConsent('commerce-recommendations')) {
+  if (historyTrackingInitialized) {
     return;
   }
-  // Store product view history in session storage
-  const storeViewCode = getConfigValue('headers.cs.Magento-Store-View-Code');
-  window.adobeDataLayer.push((dl) => {
-    dl.addEventListener('adobeDataLayer:change', (event) => {
-      if (!event.productContext || !event.productContext.sku) {
-        return;
-      }
-      const key = `${storeViewCode}:productViewHistory`;
-      let viewHistory = JSON.parse(window.localStorage.getItem(key) || '[]');
-      viewHistory = viewHistory.filter((item) => item.sku !== event.productContext.sku);
-      viewHistory.push({ date: new Date().toISOString(), sku: event.productContext.sku });
-      window.localStorage.setItem(key, JSON.stringify(viewHistory.slice(-20)));
-    }, { path: 'productContext' });
-    dl.addEventListener('place-order', () => {
-      const shoppingCartContext = dl.getState('shoppingCartContext');
-      if (!shoppingCartContext) {
-        return;
-      }
-      const key = `${storeViewCode}:purchaseHistory`;
-      const purchasedProducts = shoppingCartContext.items.map((item) => item.product.sku);
-      const purchaseHistory = JSON.parse(window.localStorage.getItem(key) || '[]');
-      purchaseHistory.push({ date: new Date().toISOString(), items: purchasedProducts });
-      window.localStorage.setItem(key, JSON.stringify(purchaseHistory.slice(-5)));
+  const storeIdentifier = getStoreIdentifier();
+  if (storeIdentifier) {
+    historyTrackingInitialized = true;
+    window.adobeDataLayer.push((dl) => {
+      const recordProductView = (event) => {
+        // Speculation Rules prerendering pushes productContext once immediately and
+        // again on activation. Ignore the prerender-only push so hovering a link
+        // doesn't record a view that never actually happened.
+        if (document.prerendering || !event.productContext || !event.productContext.sku) {
+          return;
+        }
+        const key = `${storeIdentifier}:productViewHistory`;
+        let viewHistory = JSON.parse(window.localStorage.getItem(key) || '[]');
+        viewHistory = viewHistory.filter((item) => item.sku !== event.productContext.sku);
+        viewHistory.push({ date: new Date().toISOString(), sku: event.productContext.sku });
+        window.localStorage.setItem(key, JSON.stringify(viewHistory.slice(-20)));
+      };
+      dl.addEventListener('adobeDataLayer:change', recordProductView, {
+        path: 'productContext',
+      });
+      dl.addEventListener('place-order', () => {
+        if (document.prerendering) {
+          return;
+        }
+        const shoppingCartContext = dl.getState('shoppingCartContext');
+        if (!shoppingCartContext) {
+          return;
+        }
+        const key = `${storeIdentifier}:purchaseHistory`;
+        const purchasedProducts = shoppingCartContext.items.map((item) => item.product.sku);
+        const purchaseHistory = JSON.parse(window.localStorage.getItem(key) || '[]');
+        purchaseHistory.push({ date: new Date().toISOString(), items: purchasedProducts });
+        window.localStorage.setItem(key, JSON.stringify(purchaseHistory.slice(-20)));
+      });
     });
-  });
+  }
 }
 
 /**
@@ -839,16 +976,6 @@ export async function loadErrorPage(code = 404) {
  */
 export function checkIsAuthenticated() {
   return !!getCookie('auth_dropin_user_token') ?? false;
-}
-
-/**
- * Check if consent was given for a specific topic.
- * @param {*} topic Topic identifier
- * @returns {boolean} True if consent was given
- */
-export function getConsent(_topic) {
-  console.warn('getConsent not implemented');
-  return true;
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   IS_UE,
   loadErrorPage,
   preloadFile,
+  QUICK_ORDER_PATH,
 } from '../commerce.js';
 import { getMetadata } from '../aem.js';
 
@@ -73,6 +74,25 @@ function preloadPDPAssets() {
 }
 
 await initializeDropin(async () => {
+  /**
+   * The Quick Order Drop-in reuses PDP containers but requires
+   * a simplified initialization without extra business logic
+   */
+  if (window.location.pathname === QUICK_ORDER_PATH) {
+    // Inherit Fetch GraphQL Instance (Catalog Service)
+    setEndpoint(CS_FETCH_GRAPHQL);
+
+    const labels = await fetchPlaceholders('placeholders/pdp.json');
+    const langDefinitions = {
+      default: {
+        ...labels,
+      },
+    };
+
+    // Initialize Quick Order
+    return initializers.mountImmediately(initialize, { langDefinitions });
+  }
+
   // Inherit Fetch GraphQL Instance (Catalog Service)
   setEndpoint(CS_FETCH_GRAPHQL);
 
@@ -88,10 +108,29 @@ await initializeDropin(async () => {
     return loadErrorPage();
   }
 
+  const getProductData = async (skipTransform) => {
+    const data = await fetchProductData(sku, { optionsUIDs, skipTransform })
+      .then(preloadImageMiddleware);
+    return data;
+  };
+
   const [product, labels] = await Promise.all([
-    fetchProductData(sku, { optionsUIDs, skipTransform: true }).then(preloadImageMiddleware),
+    getProductData(true),
     fetchPlaceholders('placeholders/pdp.json'),
   ]);
+
+  // A published PDP whose SKU no longer resolves serves 200 from the content
+  // bus, so the CDN-404 redirect never runs. fetchProductData resolves null
+  // for an unknown SKU — send the shopper to the native 404 rather than
+  // mounting an empty product block. (Demo Builder warm-path guard.)
+  // The editor flags differ by template version (IS_UE, later IS_DA and IS_EW),
+  // so each is read only where the file declares it.
+  const authoring = (typeof IS_UE !== 'undefined' && IS_UE)
+    || (typeof IS_DA !== 'undefined' && IS_DA)
+    || (typeof IS_EW !== 'undefined' && IS_EW);
+  if (!product && !authoring) {
+    return loadErrorPage();
+  }
 
   const langDefinitions = {
     default: {
@@ -124,7 +163,7 @@ async function preloadImageMiddleware(data) {
     let imageParams = {
       ...IMAGES_SIZES,
     };
-    if (isAemAssetsEnabled) {
+    if (isAemAssetsEnabled()) {
       url = tryGenerateAemAssetsOptimizedUrl(image, data.sku, {});
       imageParams = {
         ...imageParams,
